@@ -1,0 +1,703 @@
+# ============================================================================
+# ACC SURPLUS DISPLAY – ESPHome Configuration
+# ============================================================================
+#
+# Project: Display photovoltaic surplus for a neighbour in a Collective Self‑Consumption (ACC) setup
+# Hardware: Heltec Vision Master T190 (ESP32-S3, ST7789 1.9" display)
+# Communication: MQTTS (TLS) to remote broker
+#
+# Features:
+# - WiFi configuration via captive portal (neighbour sets his own network)
+# - Secure MQTTS connection to your broker
+# - Instant surplus value (W) with colour coding based on power level
+# - 12‑hour history graph for PV and surplus (1 point per minute)
+# - Total PV power and daily injected energy
+# - Large clock (HH:MM) with outdoor temperature and humidity
+# - Configurable page switching durations
+# - Backlight brightness control via Home Assistant entity
+# - WiFi signal strength (bars or SSID, alternating)
+# - MQTT connection indicator (green / red)
+#
+# All user‑configurable parameters are in the `substitutions` section.
+# ============================================================================
+
+# ============================================================================
+# USER CONFIGURABLE PARAMETERS – EDIT HERE AS NEEDED
+# ============================================================================
+substitutions:
+  # --- Display durations (seconds) ---
+  page_duration_main: "8"      # Main data page duration
+  page_duration_clock: "4"     # Clock page duration
+  wifi_display_interval: "4"   # Switch between SSID / WiFi bars every X seconds
+
+  # --- MQTT topics (must match those published by Home Assistant) ---
+  topic_surplus: "tele/surplus/etat"
+  topic_pv_total: "tele/pv_total/etat"
+  topic_injection: "tele/injection_affichage/etat"
+
+  # --- Colour thresholds for surplus value (W) ---
+  threshold_yellow: "100"   # < 100 W → yellow
+  threshold_green: "500"    # < 500 W → green
+  threshold_orange: "1500"  # < 1500 W → orange
+  # Above → red
+
+  # --- COLOURS (use Color(r,g,b) with r,g,b from 0 to 255) ---
+  # Basic colours
+  color_background: "Color(0,0,0)"       # Black background
+  color_text_white: "Color(255,255,255)" # White text
+  color_text_gray: "Color(200,200,200)"  # Light gray
+  color_surplus_yellow: "Color(255,255,0)"   # Yellow
+  color_surplus_green: "Color(0,255,0)"      # Green
+  color_surplus_orange: "Color(255,165,0)"   # Orange
+  color_surplus_red: "Color(255,0,0)"        # Red
+  color_graph_frame: "Color(255,255,255)"   # White frame
+  color_legend_pv: "Color(0,255,255)"       # Cyan for PV legend
+  color_legend_surplus: "Color(255,255,0)"  # Yellow for surplus legend
+  color_curve_pv: "Color(0,255,255)"        # Cyan for PV curve
+  color_curve_surplus: "Color(255,255,0)"   # Yellow for surplus curve
+  color_text_s15min: "Color(0,255,255)"     # Cyan for 15‑min average text
+  color_text_energy: "Color(0,255,255)"     # Cyan for daily energy text
+  color_mqtt_online: "Color(0,255,0)"       # Green for MQTT connected
+  color_mqtt_offline: "Color(255,0,0)"      # Red for MQTT disconnected
+  color_wifi_text: "Color(255,255,255)"     # White for WiFi text
+  color_wifi_bars: "Color(255,255,255)"     # White for WiFi bars
+  color_pv_label: "Color(200,200,200)"      # Light gray for PV label
+  color_pv_value: "Color(0,255,255)"        # Cyan for PV value
+  color_time: "Color(0,255,255)"            # Cyan for clock
+  color_weather: "Color(255,255,255)"       # White for weather text
+
+  # --- Coordinates and sizes (pixels) ---
+  time_x: "60"
+  time_y: "35"
+  time_font_size: "70"
+
+  weather_x: "60"
+  weather_y: "120"
+  weather_font_size: "16"
+
+  graph_x: "5"
+  graph_y: "37"
+  graph_width: "314"
+  graph_height: "110"
+  legend_top_offset: "12"
+  legend_square_size: "6"
+  legend_spacing: "18"
+
+  mqtt_indicator_x: "8"
+  mqtt_indicator_y_offset: "10"
+  mqtt_indicator_radius: "4"
+
+  pv_current_x: "170"
+  pv_current_y_bottom_offset: "5"
+
+  surplus_title_x: "5"
+  surplus_title_y: "0"
+  surplus_value_x: "200"
+  surplus_value_y: "-8"
+  surplus_unit_x: "298"
+  surplus_unit_y: "12"
+
+  # --- Font sizes ---
+  font_big_size: "45"
+  font_small_size: "16"
+  font_huge_size: "70"
+
+  # --- ESP32 pins (Heltec Vision Master T190) ---
+  pin_vtft_enable: "GPIO7"
+  pin_backlight: "GPIO17"
+  pin_spi_clk: "GPIO38"
+  pin_spi_mosi: "GPIO48"
+  pin_display_cs: "GPIO39"
+  pin_display_dc: "GPIO47"
+  pin_display_reset: "GPIO40"
+
+# ============================================================================
+# SURPLUS / PV TOTAL / INJECTION DISPLAY + CLOCK + OUTDOOR WEATHER
+# Heltec Vision Master T190 (ESP32-S3, ST7789 1.9" 170x320)
+# ============================================================================
+
+esphome:
+  name: surplus-douady
+  friendly_name: Afficheur Surplus Douady Feron
+  name_add_mac_suffix: true
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+    version: recommended
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  reboot_timeout: 0s
+  ap:
+    ssid: "Surplus-PV-ACC"
+    password: "Surplus2026"
+
+captive_portal:
+
+mqtt:
+  id: mqtt_client
+  broker: "your-broker-adress"
+  port: 8883
+  username: "username-id"
+  password: "password"
+  certificate_authority: |
+    -----BEGIN CERTIFICATE-----
+    MIIDsjCCAzegAwIBAgISBQwQiKIInUqkMBraeUfACj4nMAoGCCqGSM49BAMDMDIx
+    CzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQswCQYDVQQDEwJF
+    NzAeFw0yNjAzMjAxMTIxNTNaFw0yNjA2MTgxMTIxNTJaMCAxHjAcBgNVBAMTFWxl
+    YnJ1eWFudC5kdWNrZG5zLm9yZzB2MBAGByqGSM49AgEGBSuBBAAiA2IABP9D6zEG
+    QUAZFWms9fs3Ln321Pl/0G824LCwQfgEliGwWvdNy6LwJafsrWwkTZTDtBa1IAEN
+    BU4mF4PpbeLg6ak9sBAskzD1OCI3nW/Ui0n83Iv0Wo355IWfDBmZokIQdKOCAiAw
+    ggIcMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAMBgNVHRMB
+    Af8EAjAAMB0GA1UdDgQWBBT7pYpphwrLVW6nCZaGb44aTgB19zAfBgNVHSMEGDAW
+    gBSuSJ7chx1EoG/aouVgdAR4wpwAgDAyBggrBgEFBQcBAQQmMCQwIgYIKwYBBQUH
+    MAKGFmh0dHA6Ly9lNy5pLmxlbmNyLm9yZy8wIAYDVR0RBBkwF4IVbGVicnV5YW50
+    LmR1Y2tkbnMub3JnMBMGA1UdIAQMMAowCAYGZ4EMAQIBMC0GA1UdHwQmMCQwIqAg
+    oB6GHGh0dHA6Ly9lNy5jLmxlbmNyLm9yZy80MC5jcmwwggELBgorBgEEAdZ5AgQC
+    BIH8BIH5APcAfQBxfpXzwjiKbbHjhEk9MeFaqWIIdi1CAOAFDNBntaZh4gAAAZ0L
+    MIp/AAgAAAUADCJ+iAQDAEYwRAIgT8XLNhokCDgbHxQeFrSgpa08MSKwBTekt+v4
+    05i6vCcCIA95+5aJthlA1Itf6/cp877MlRWYF34G9RNko5+LtC8NAHYAyzj3FYl8
+    hKFEX1vB3fvJbvKaWc1HCmkFhbDLFMMUWOcAAAGdCzCR+AAABAMARzBFAiAr+gRd
+    ATWx5Luf0b/GP72Y+ybJoy9Wer0u+HpOsMUc4QIhANPW+2/Faxl5eCMbKApCYXtO
+    HgabfwYSh9ckg9RBrqqVMAoGCCqGSM49BAMDA2kAMGYCMQCSfWPbt/Mw85igPsNj
+    ZYRVqQ8gFw1Lenj8hsYSynyAnSAhb+WcWGfkYOJ5/sZsDBICMQCiYLHf7hQVdHZR
+    Qy0c+Exqbe4XMZjnQiUHq+EDQcOJWxD7ePJ2CT1hNpkpQkBaBXs=
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIIEVzCCAj+gAwIBAgIRAKp18eYrjwoiCWbTi7/UuqEwDQYJKoZIhvcNAQELBQAw
+    TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+    cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMjQwMzEzMDAwMDAw
+    WhcNMjcwMzEyMjM1OTU5WjAyMQswCQYDVQQGEwJVUzEWMBQGA1UEChMNTGV0J3Mg
+    RW5jcnlwdDELMAkGA1UEAxMCRTcwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAARB6AST
+    CFh/vjcwDMCgQer+VtqEkz7JANurZxLP+U9TCeioL6sp5Z8VRvRbYk4P1INBmbef
+    QHJFHCxcSjKmwtvGBWpl/9ra8HW0QDsUaJW2qOJqceJ0ZVFT3hbUHifBM/2jgfgw
+    gfUwDgYDVR0PAQH/BAQDAgGGMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcD
+    ATASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBSuSJ7chx1EoG/aouVgdAR4
+    wpwAgDAfBgNVHSMEGDAWgBR5tFnme7bl5AFzgAiIyBpY9umbbjAyBggrBgEFBQcB
+    AQQmMCQwIgYIKwYBBQUHMAKGFmh0dHA6Ly94MS5pLmxlbmNyLm9yZy8wEwYDVR0g
+    BAwwCjAIBgZngQwBAgEwJwYDVR0fBCAwHjAcoBqgGIYWaHR0cDovL3gxLmMubGVu
+    Y3Iub3JnLzANBgkqhkiG9w0BAQsFAAOCAgEAjx66fDdLk5ywFn3CzA1w1qfylHUD
+    aEf0QZpXcJseddJGSfbUUOvbNR9N/QQ16K1lXl4VFyhmGXDT5Kdfcr0RvIIVrNxF
+    h4lqHtRRCP6RBRstqbZ2zURgqakn/Xip0iaQL0IdfHBZr396FgknniRYFckKORPG
+    yM3QKnd66gtMst8I5nkRQlAg/Jb+Gc3egIvuGKWboE1G89NTsN9LTDD3PLj0dUMr
+    OIuqVjLB8pEC6yk9enrlrqjXQgkLEYhXzq7dLafv5Vkig6Gl0nuuqjqfp0Q1bi1o
+    yVNAlXe6aUXw92CcghC9bNsKEO1+M52YY5+ofIXlS/SEQbvVYYBLZ5yeiglV6t3S
+    M6H+vTG0aP9YHzLn/KVOHzGQfXDP7qM5tkf+7diZe7o2fw6O7IvN6fsQXEQQj8TJ
+    UXJxv2/uJhcuy/tSDgXwHM8Uk34WNbRT7zGTGkQRX0gsbjAea/jYAoWv0ZvQRwpq
+    Pe79D/i7Cep8qWnA+7AE/3B3S/3dEEYmc0lpe1366A/6GEgk3ktr9PEoQrLChs6I
+    tu3wnNLB2euC8IKGLQFpGtOO/2/hiAKjyajaBP25w1jF0Wl8Bbqne3uZ2q1GyPFJ
+    YRmT7/OXpmOH/FVLtwS+8ng1cAmpCujPwteJZNcDG0sF2n/sc0+SQf49fdyUK0ty
+    +VUwFj9tmWxyR/M=
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+    TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+    cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+    WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+    ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+    MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+    h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+    0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+    A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+    T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+    B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+    B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+    KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+    OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+    jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+    qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+    rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+    HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+    hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+    ubhzEFfTv1nsRmLqq1WNtVF9iBJLMrAZTZ75zdvogb3C5qMqP6YqjP4BPrbV2S//
+    dY+1jcvZdIbHB5hFjVQ0nvE+QDksjIUSj0pRMzXlXWmCn6B7v5H3yQ8mmJntV+D9
+    QzAyS6W8G4zC9j0WbCG7D/L9s7VW1jJhNRQfEL7c2S9zWwR0FpRr7hRdglC7UOe+
+    rZ6f7NXV8hC6Ql0Dn5Uc3cT8p0GfF4E6W9iT+J3I6ZVv4hB/A/UhVgA/XUj7Gxhk
+    +L/NlBXzHZ4dL7vvL8tSz6sACcJmPjE5T4pPB9e9rCk+rggFb2iY3fMUqFy7eN7j
+    hKqjT1hQZ5Qmh8+27WqM82Gq1h4KjK9c7hUFi+IgWqAjzYzSfVJHJv/GH/r9wO9q
+    0r3lQ1uC5m5EwnI5VXqVj1T5hP9j7LJZVTpZ4q5FQ1jZ0VpJxj7RZz0qKj1fQ0
+    rR9I3yHtT1Q0qF9RjZ0zR1p4q
+    -----END CERTIFICATE-----
+  skip_cert_cn_check: true
+  reboot_timeout: 0s
+  keepalive: 60s
+
+api:
+  encryption:
+    key: "CVp/Ea8xX/5xonuFDu8uNDN+OqqIxp7QkuP37kIGJ0M="
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: "d64e0ce0e5dde6608baf3ca72d4e9318"
+
+# ====================== TIME (NTP) ======================
+time:
+  - platform: sntp
+    id: esptime
+    timezone: Europe/Paris
+    servers:
+      - 0.fr.pool.ntp.org
+      - 1.fr.pool.ntp.org
+
+logger:
+  level: INFO
+
+# ====================== MQTT SENSORS ======================
+text_sensor:
+  - platform: mqtt_subscribe
+    id: surplus_brut_text
+    topic: ${topic_surplus}
+    qos: 0
+
+  - platform: mqtt_subscribe
+    id: pv_brut_text
+    topic: ${topic_pv_total}
+    qos: 0
+
+  - platform: mqtt_subscribe
+    id: injection_brut_text
+    topic: ${topic_injection}
+    qos: 0
+
+  - platform: wifi_info
+    ssid:
+      id: wifi_ssid_sensor
+      name: "WiFi SSID"
+
+sensor:
+  - platform: template
+    id: surplus_instant
+    lambda: |-
+      if (id(surplus_brut_text).has_state()) {
+        return parse_number<float>(id(surplus_brut_text).state).value_or(0);
+      } else {
+        return 0;
+      }
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 0
+
+  - platform: template
+    id: pv_instant
+    lambda: |-
+      if (id(pv_brut_text).has_state()) {
+        float val = parse_number<float>(id(pv_brut_text).state).value_or(0);
+        return val < 0 ? 0 : val;
+      } else {
+        return 0;
+      }
+    update_interval: 5s
+    unit_of_measurement: "W"
+    accuracy_decimals: 0
+
+  - platform: template
+    id: injection_instant
+    lambda: |-
+      if (id(injection_brut_text).has_state()) {
+        float val = parse_number<float>(id(injection_brut_text).state).value_or(0);
+        return val < 0 ? 0 : val;
+      } else {
+        return 0;
+      }
+    update_interval: 5s
+    unit_of_measurement: "Wh"
+    accuracy_decimals: 0
+
+  # Outdoor temperature/humidity via Home Assistant API
+  - platform: homeassistant
+    id: temperature_ext
+    entity_id: sensor.h5179_94bc_temperature
+    internal: false
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+
+  - platform: homeassistant
+    id: humidite_ext
+    entity_id: sensor.h5179_94bc_humidity
+    internal: false
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+
+  - platform: wifi_signal
+    id: wifi_signal_sensor
+    update_interval: 60s
+
+  - platform: uptime
+    id: uptime_sensor
+    name: "Uptime"
+    update_interval: 60s
+
+# ====================== BACKLIGHT BRIGHTNESS CONTROL ======================
+number:
+  - platform: template
+    name: "Backlight Brightness"
+    id: backlight_brightness
+    min_value: 0
+    max_value: 100
+    step: 1
+    initial_value: 100
+    optimistic: true
+    set_action:
+      then:
+        - light.control:
+            id: backlight
+            brightness: !lambda 'return x / 100.0;'
+
+# ====================== MQTT CONNECTION STATUS ======================
+binary_sensor:
+  - platform: template
+    id: mqtt_connected_status
+    lambda: |-
+      return id(mqtt_client).is_connected();
+    name: "MQTT Connected"
+
+# ====================== HISTORIES ======================
+globals:
+  - id: historique_surplus
+    type: std::vector<float>
+    restore_value: false
+  - id: index_historique_surplus
+    type: int
+    initial_value: '0'
+  - id: max_surplus
+    type: float
+    initial_value: '1000.0'
+
+  - id: historique_pv
+    type: std::vector<float>
+    restore_value: false
+  - id: index_historique_pv
+    type: int
+    initial_value: '0'
+  - id: max_pv
+    type: float
+    initial_value: '1000.0'
+
+  - id: graph_max
+    type: float
+    initial_value: '1000.0'
+
+  - id: surplus_15min_avg
+    type: float
+    initial_value: '0.0'
+
+  - id: wifi_display_mode
+    type: int
+    initial_value: '0'
+
+  - id: current_page
+    type: int
+    initial_value: '0'
+
+  - id: page_timer
+    type: int
+    initial_value: '0'
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          // Surplus
+          float s = id(surplus_instant).state;
+          if (std::isnan(s)) s = 0;
+          if (id(historique_surplus).size() < 720) {
+            id(historique_surplus).push_back(s);
+          } else {
+            id(historique_surplus)[id(index_historique_surplus)] = s;
+            id(index_historique_surplus) = (id(index_historique_surplus) + 1) % 720;
+          }
+          float m_s = 0;
+          for (float v : id(historique_surplus)) if (v > m_s) m_s = v;
+          if (m_s == 0) m_s = 100;
+          id(max_surplus) = m_s * 1.1;
+
+          // PV total (already ≥0)
+          float p = id(pv_instant).state;
+          if (std::isnan(p)) p = 0;
+          if (id(historique_pv).size() < 720) {
+            id(historique_pv).push_back(p);
+          } else {
+            id(historique_pv)[id(index_historique_pv)] = p;
+            id(index_historique_pv) = (id(index_historique_pv) + 1) % 720;
+          }
+          float m_p = 0;
+          for (float v : id(historique_pv)) if (v > m_p) m_p = v;
+          if (m_p == 0) m_p = 100;
+          id(max_pv) = m_p * 1.1;
+
+          id(graph_max) = std::max(id(max_surplus), id(max_pv));
+          if (id(graph_max) == 0) id(graph_max) = 100;
+
+          // Rolling 15‑minute average
+          int nb_pts = id(historique_surplus).size();
+          int window = 15;
+          if (nb_pts > 0) {
+            int start = nb_pts - window;
+            if (start < 0) start = 0;
+            float sum = 0;
+            int count = 0;
+            for (int i = start; i < nb_pts; i++) {
+              sum += id(historique_surplus)[i];
+              count++;
+            }
+            id(surplus_15min_avg) = sum / count;
+          } else {
+            id(surplus_15min_avg) = 0;
+          }
+
+  - interval: 1s
+    then:
+      - lambda: |-
+          id(page_timer) += 1;
+          int current = id(current_page);
+          int max_time = (current == 0) ? ${page_duration_main} : ${page_duration_clock};
+          if (id(page_timer) >= max_time) {
+            id(current_page) = (current + 1) % 2;
+            if (id(current_page) == 0) {
+              id(main_display).show_page(page_main);
+            } else {
+              id(main_display).show_page(page_clock);
+            }
+            id(page_timer) = 0;
+          }
+
+  - interval: ${wifi_display_interval}s
+    then:
+      - lambda: |-
+          id(wifi_display_mode) = (id(wifi_display_mode) + 1) % 2;
+
+# ====================== DISPLAY ======================
+output:
+  - platform: gpio
+    pin: ${pin_vtft_enable}
+    id: vftf_enable_output
+    inverted: true
+
+  - platform: ledc
+    pin: ${pin_backlight}
+    id: backlight_output
+    inverted: false
+    frequency: 1000Hz
+
+light:
+  - platform: binary
+    output: vftf_enable_output
+    id: vtft_enable_light
+    restore_mode: ALWAYS_ON
+
+  - platform: monochromatic
+    output: backlight_output
+    id: backlight
+    name: "Backlight"
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+spi:
+  - id: spi_display
+    clk_pin: ${pin_spi_clk}
+    mosi_pin: ${pin_spi_mosi}
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: ${font_big_size}
+    glyphs: ['0','1','2','3','4','5','6','7','8','9','-','W',' ']
+
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: ${font_small_size}
+    glyphs: [
+      'S','U','R','P','L','A','C','T','E','W','H',
+      'i','F','d','B','m','h','n','a','I',
+      '0','1','2','3','4','5','6','7','8','9','-',':',' ','/',
+      'x','.','e','r','u','y','t','b','c','f','g','j','k','o','p','q','s','v','w','z',
+      'V','l','°','%'
+    ]
+
+  - file: "gfonts://Roboto"
+    id: font_huge
+    size: ${font_huge_size}
+    glyphs: ['0','1','2','3','4','5','6','7','8','9',':',' ']
+
+display:
+  - platform: ili9xxx
+    id: main_display
+    model: "st7789v"
+    dimensions:
+      width: 170
+      height: 320
+      offset_width: 35
+      offset_height: 0
+    cs_pin: ${pin_display_cs}
+    dc_pin: ${pin_display_dc}
+    reset_pin: ${pin_display_reset}
+    rotation: 270
+    color_order: BGR
+    invert_colors: true
+    update_interval: 3s
+    data_rate: 20MHz
+    pages:
+      - id: page_main
+        lambda: |-
+          id(backlight).turn_on();
+          it.fill(${color_background});
+          
+          // Title
+          it.print(${surplus_title_x}, ${surplus_title_y}, id(font_small), ${color_text_white}, "SURPLUS ACTUEL ACC : ");
+          
+          // Instant value
+          if (id(surplus_brut_text).has_state()) {
+            float s = id(surplus_instant).state;
+            Color col;
+            if (s < ${threshold_yellow}) col = ${color_surplus_yellow};
+            else if (s < ${threshold_green}) col = ${color_surplus_green};
+            else if (s < ${threshold_orange}) col = ${color_surplus_orange};
+            else col = ${color_surplus_red};
+            it.printf(${surplus_value_x}, ${surplus_value_y}, id(font_big), col, "%.0f", s);
+            it.print(${surplus_unit_x}, ${surplus_unit_y}, id(font_small), ${color_text_white}, "W");
+          } else {
+            it.print(${surplus_value_x}, ${surplus_value_y}, id(font_big), ${color_surplus_red}, "--- W");
+          }
+          
+          // Graph
+          int graph_x = ${graph_x};
+          int graph_y = ${graph_y};
+          int graph_w = ${graph_width};
+          int graph_h = ${graph_height};
+          it.rectangle(graph_x, graph_y, graph_w, graph_h, ${color_graph_frame});
+          
+          // Legend (coloured squares)
+          int top_y = graph_y + ${legend_top_offset};
+          int sq = ${legend_square_size};
+          int legend_spacing = ${legend_spacing};
+          
+          it.filled_rectangle(8, top_y, sq, sq, ${color_legend_pv});
+          it.print(8 + sq + 2, top_y - 6, id(font_small), ${color_text_white}, "PV Total");
+          it.filled_rectangle(8, top_y + legend_spacing - 5, sq, sq, ${color_legend_surplus});
+          it.print(8 + sq + 2, top_y + legend_spacing -9, id(font_small), ${color_text_white}, "Surplus");
+          
+          // --- Curves (drawn first) ---
+          float gmax = id(graph_max);
+          if (gmax > 0) {
+            // PV curve (cyan)
+            int nb_p = id(historique_pv).size();
+            if (nb_p > 1) {
+              int prev_x = graph_x + 2;
+              int prev_y = graph_y + graph_h - (id(historique_pv)[0] / gmax * graph_h);
+              for (int i = 1; i < nb_p; i++) {
+                int x = graph_x + 2 + (i * (graph_w - 4) / (nb_p - 1));
+                int y = graph_y + graph_h - (id(historique_pv)[i] / gmax * graph_h);
+                it.line(prev_x, prev_y, x, y, ${color_curve_pv});
+                prev_x = x;
+                prev_y = y;
+              }
+            }
+            
+            // Surplus curve (yellow)
+            int nb_s = id(historique_surplus).size();
+            if (nb_s > 1) {
+              int prev_x = graph_x + 2;
+              int prev_y = graph_y + graph_h - (id(historique_surplus)[0] / gmax * graph_h);
+              for (int i = 1; i < nb_s; i++) {
+                int x = graph_x + 2 + (i * (graph_w - 4) / (nb_s - 1));
+                int y = graph_y + graph_h - (id(historique_surplus)[i] / gmax * graph_h);
+                it.line(prev_x, prev_y, x, y, ${color_curve_surplus});
+                prev_x = x;
+                prev_y = y;
+              }
+            }
+          }
+          
+          // --- Texts (overlaid) ---
+          if (gmax > 0) {
+            int center_y = graph_y + graph_h / 2 - 8;
+            it.printf(120, center_y, id(font_small), ${color_text_s15min}, "S 15min : %.0f W", id(surplus_15min_avg));
+            float inj = id(injection_instant).state;
+            it.printf(120, center_y + 14, id(font_small), ${color_text_energy}, "Energie jour : %.0f Wh", inj);
+          }
+          
+          // --- Information below the graph ---
+          int bottom_y = graph_y + graph_h + ${pv_current_y_bottom_offset};
+          
+          // MQTT indicator (circle)
+          bool mqtt_ok = id(mqtt_connected_status).state;
+          int center_x = ${mqtt_indicator_x};
+          int center_y = bottom_y + ${mqtt_indicator_y_offset};
+          int radius = ${mqtt_indicator_radius};
+          if (mqtt_ok) {
+            it.filled_circle(center_x, center_y, radius, ${color_mqtt_online});
+          } else {
+            it.filled_circle(center_x, center_y, radius, ${color_mqtt_offline});
+          }
+          
+          // WiFi
+          if (id(wifi_display_mode) == 0) {
+            if (id(wifi_ssid_sensor).has_state()) {
+              it.printf(20, bottom_y, id(font_small), ${color_wifi_text}, "WiFi : %s", id(wifi_ssid_sensor).state.c_str());
+            } else {
+              it.print(20, bottom_y, id(font_small), ${color_wifi_text}, "WiFi : ...");
+            }
+          } else {
+            if (id(wifi_signal_sensor).has_state()) {
+              int rssi = id(wifi_signal_sensor).state;
+              int bars;
+              if (rssi >= -50) bars = 5;
+              else if (rssi <= -90) bars = 0;
+              else bars = (int)((rssi + 90) * 5.0 / 40.0);
+              if (bars > 5) bars = 5;
+              if (bars < 0) bars = 0;
+              int x_start = 60;
+              int bar_width = 5;
+              int gap = 2;
+              int max_height = 15;
+              for (int i = 0; i < 5; i++) {
+                int height;
+                if (i < bars) {
+                  height = ((i+1) * max_height) / bars;
+                  if (height > max_height) height = max_height;
+                } else {
+                  height = 1;
+                }
+                it.filled_rectangle(x_start + i*(bar_width+gap), bottom_y + max_height - height, bar_width, height, ${color_wifi_bars});
+              }
+              it.print(20, bottom_y, id(font_small), ${color_wifi_text}, "WiFi : ");
+            } else {
+              it.print(20, bottom_y, id(font_small), ${color_wifi_text}, "WiFi : --");
+            }
+          }
+          
+          // Current PV (bottom right)
+          it.print(${pv_current_x}, bottom_y, id(font_small), ${color_pv_label}, "PV actuel : ");
+          float pv_now = id(pv_instant).state;
+          it.printf(265, bottom_y, id(font_small), ${color_pv_value}, "%.0f W", pv_now);
+
+      - id: page_clock
+        lambda: |-
+          id(backlight).turn_on();
+          it.fill(${color_background});
+          
+          // Get current time (HH:MM)
+          time_t now = id(esptime).now().timestamp;
+          struct tm *timeinfo = localtime(&now);
+          char time_str[6];
+          strftime(time_str, sizeof(time_str), "%H:%M", timeinfo);
+          
+          // Display the clock
+          it.print(${time_x}, ${time_y}, id(font_huge), ${color_time}, time_str);
+          
+          // Read sensors
+          float temp = id(temperature_ext).state;
+          float hum = id(humidite_ext).state;
+          
+          // Build combined string
+          char combined[40];
+          snprintf(combined, sizeof(combined), "Temp Ext.: %.1f°C / Hum: %.0f%%", temp, hum);
+          
+          // Display weather
+          it.print(${weather_x}, ${weather_y}, id(font_small), ${color_weather}, combined);
