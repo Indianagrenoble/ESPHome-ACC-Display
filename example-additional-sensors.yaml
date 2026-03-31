@@ -1,0 +1,17 @@
+text_sensor:
+  - platform: mqtt_subscribe
+    id: battery_brut_text
+    topic: "tele/battery/etat"
+    qos: 0
+
+sensor:
+  - platform: template
+    id: battery
+    lambda: |-
+      if (id(battery_brut_text).has_state()) {
+        return parse_number<float>(id(battery_brut_text).state).value_or(0);
+      } else {
+        return 0;
+      }
+    unit_of_measurement: "W"
+    accuracy_decimals: 0
