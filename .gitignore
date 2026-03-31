@@ -1,0 +1,12 @@
+# Secrets
+secrets.yaml
+
+# ESPHome build artefacts
+build/
+.esphome/
+.pioenvs/
+.piolibdeps/
+
+# Logs and binaries
+*.log
+*.bin
