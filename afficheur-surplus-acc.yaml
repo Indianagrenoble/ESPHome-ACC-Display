@@ -229,12 +229,12 @@ mqtt:
 
 api:
   encryption:
-    key: "CVp/Ea8xX/5xonuFDu8uNDN+OqqIxp7QkuP37kIGJ0M="
+    key: "CVp/Ea8xX/5xonu8uNDN+OqqIxp7QxxxxkuP37kIGJ0M="
   reboot_timeout: 0s
 
 ota:
   - platform: esphome
-    password: "d64e0ce0e5dde6608baf3ca72d4e9318"
+    password: "d64e0ce0ede6608baf3cxxxxa72d4e9318"
 
 # ====================== TIME (NTP) ======================
 time:
